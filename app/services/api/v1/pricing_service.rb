@@ -1,9 +1,12 @@
 module Api::V1
   class PricingService < BaseService
+    include ::Concerns::ServiceLoggable
+
     # Constants for high-throughput strategy
     CACHE_TTL = 5.minutes
     RACE_CONDITION_TTL = 10.seconds
 
+    # Custom error for flow control
     class ApiFallbackError < StandardError; end
 
     def initialize(period:, hotel:, room:)
@@ -14,14 +17,14 @@ module Api::V1
 
     def run
       @result = Rails.cache.fetch(cache_key, expires_in: CACHE_TTL, race_condition_ttl: RACE_CONDITION_TTL) do
-        Rails.logger.info("[PricingService] Cache miss for #{cache_key}. Fetching from API.")
+        log_info("Cache miss for #{cache_key}. Fetching from API.")
         fetch_from_api
       end
     rescue ApiFallbackError, SocketError, Errno::ECONNREFUSED, Net::OpenTimeout => e
       # Failure/Error handling: Logging the specific exception
-      Rails.logger.error("[PricingService] Failed for #{cache_key}: #{e.message}")
+      log_error("Failed for #{cache_key}: #{e.message}")
       errors << "Rate service temporarily unavailable. Please try again shortly."
-      nil 
+      nil
     end
 
     private
@@ -32,6 +35,7 @@ module Api::V1
       if response.success?
         parse_rate_from_response(response.body)
       else
+        log_error("API call failed with status", { status: response.code, body: response.body }) 
         # Handle specific status codes (429 Too Many Requests, 503 Overloaded)
         handle_api_failure(response)
         # Return nil so Rails.cache doesn't persist the error/failure
