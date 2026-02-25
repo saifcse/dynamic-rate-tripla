@@ -1,4 +1,4 @@
-module Concerns
+# module Concerns
   module ServiceLoggable
     extend ActiveSupport::Concern
 
@@ -29,4 +29,4 @@ module Concerns
       Rails.logger.send(level, log_data.to_json)
     end
   end
-end
+# end

@@ -1,6 +1,6 @@
 module Api::V1
   class PricingService < BaseService
-    include ::Concerns::ServiceLoggable
+    include ServiceLoggable
 
     # Constants for high-throughput strategy
     CACHE_TTL = 5.minutes
@@ -31,6 +31,8 @@ module Api::V1
 
     def fetch_from_api
       response = RateApiClient.get_rate(period: @period, hotel: @hotel, room: @room)
+      # to check connection header for debugging connection pooling and persistent connections
+      # log_info("DEBUG: Connection Header from API: #{response.headers['connection']}")
 
       if response.success?
         parse_rate_from_response(response.body)
@@ -44,8 +46,18 @@ module Api::V1
     end
 
     def parse_rate_from_response(response_body)
-      parsed = JSON.parse(response_body)
-      parsed['rates'].detect { |r| r['period'] == @period && r['hotel'] == @hotel && r['room'] == @room }&.dig('rate')
+      parsed = JSON.parse(response_body) || {}
+      # Use &. to ensure we don't call detect on nil
+      # Use Array() to ensure we have an iterable even if 'rates' is missing
+      rates = Array(parsed['rates']) 
+      
+      rate_entry = rates.detect do |r| 
+        r['period'] == @period && 
+        r['hotel'] == @hotel && 
+        r['room'] == @room 
+      end
+
+      rate_entry&.dig('rate')
     end  
 
     def handle_api_failure(response)
