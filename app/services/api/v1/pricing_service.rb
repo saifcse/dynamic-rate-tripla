@@ -1,10 +1,14 @@
+require "net/http"
+
 module Api::V1
   class PricingService < BaseService
     include ServiceLoggable
+    include CircuitBreakable
 
     # Constants for high-throughput strategy
     CACHE_TTL = 5.minutes
     RACE_CONDITION_TTL = 10.seconds
+    CIRCUIT_BREAKER_KEY = "circuit_breaker:rate_api"
 
     # Custom error for flow control
     class ApiFallbackError < StandardError; end
@@ -16,12 +20,23 @@ module Api::V1
     end
 
     def run
-      @result = Rails.cache.fetch(cache_key, expires_in: CACHE_TTL, race_condition_ttl: RACE_CONDITION_TTL) do
-        log_info("Cache miss for #{cache_key}. Fetching from API.")
-        fetch_from_api
+      # Check if the Circuit Breaker is OPEN (tripped)
+      if circuit_open?(CIRCUIT_BREAKER_KEY)
+        log_error("Circuit is OPEN. Skipping API call for #{cache_key}")
+        errors << "Rate service is cooling down. Please try again in 30s."
+        return nil
       end
-    rescue ApiFallbackError, SocketError, Errno::ECONNREFUSED, Net::OpenTimeout => e
-      # Failure/Error handling: Logging the specific exception
+
+      self.result = Rails.cache.fetch(cache_key, expires_in: CACHE_TTL, race_condition_ttl: RACE_CONDITION_TTL) do
+        log_info("CACHE_MISS_API_CALL: #{cache_key}. Fetching from API.")
+        data = fetch_from_api
+    
+        # If data is nil, do NOT let fetch save it.
+        raise ApiFallbackError, "API returned no data" if data.nil?
+        
+        data
+      end
+    rescue ApiFallbackError, SocketError, Errno::ECONNREFUSED, Net::OpenTimeout, Net::ReadTimeout => e
       log_error("Failed for #{cache_key}: #{e.message}")
       errors << "Rate service temporarily unavailable. Please try again shortly."
       nil
@@ -31,24 +46,35 @@ module Api::V1
 
     def fetch_from_api
       response = RateApiClient.get_rate(period: @period, hotel: @hotel, room: @room)
-      # to check connection header for debugging connection pooling and persistent connections
-      # log_info("DEBUG: Connection Header from API: #{response.headers['connection']}")
-
       if response.success?
         parse_rate_from_response(response.body)
       else
-        log_error("API call failed with status", { status: response.code, body: response.body }) 
-        # Handle specific status codes (429 Too Many Requests, 503 Overloaded)
+        # TRIP CIRCUIT for 429 OR any 5xx Server Error
+        if response.code == 429 || (500..599).include?(response.code)
+          log_error("API Error #{response.code}. Tripping circuit breaker for #{CIRCUIT_BREAKER_TTL}s")
+          trip_circuit!(CIRCUIT_BREAKER_KEY)
+        end
+
+        log_error("API call failed with status #{response.code}") 
         handle_api_failure(response)
-        # Return nil so Rails.cache doesn't persist the error/failure
-        nil 
+        nil # Rails.cache.fetch will not store this nil
       end
+    rescue SocketError, Errno::ECONNREFUSED, Net::OpenTimeout, Net::ReadTimeout => e
+      # Trip the circuit for network/timeout issues too!
+      # If the API is down, we shouldn't keep trying every millisecond.
+      log_error("Network Error: #{e.message}. Tripping circuit breaker.")
+      trip_circuit!(CIRCUIT_BREAKER_KEY)
+      raise # Re-raise so the 'run' method rescue block handles the error message
     end
 
     def parse_rate_from_response(response_body)
-      parsed = JSON.parse(response_body) || {}
-      # Use &. to ensure we don't call detect on nil
-      # Use Array() to ensure we have an iterable even if 'rates' is missing
+      parsed = begin
+        JSON.parse(response_body)
+      rescue JSON::ParserError
+        log_error("Invalid JSON from API for #{cache_key}")
+        return nil
+      end
+
       rates = Array(parsed['rates']) 
       
       rate_entry = rates.detect do |r| 
@@ -65,7 +91,7 @@ module Api::V1
       when 429
         errors << "Rate API rate limit exceeded. Scaling back requests."
       when 500..599
-        errors << "External AI Model is currently overloaded. Please try again later."
+        errors << "Rate API is currently overloaded. Please try again later."
       else
         errors << "Failed to fetch rate from API: #{response.code}"
       end
