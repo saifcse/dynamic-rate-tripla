@@ -1,0 +1,22 @@
+[
+  {
+    "url": "/api/v1/pricing?period=Summer&hotel=FloatingPointResort&room=SingletonRoom",
+    "params": { "period": "Summer", "hotel": "FloatingPointResort", "room": "SingletonRoom" },
+    "expected_rate": "15000"
+  },
+  {
+    "url": "/api/v1/pricing?period=Autumn&hotel=GitawayHotel&room=RestfulKing",
+    "params": { "period": "Autumn", "hotel": "GitawayHotel", "room": "RestfulKing" },
+    "expected_rate": "25000"
+  },
+  {
+    "url": "/api/v1/pricing?period=Winter&hotel=RecursionRetreat&room=BooleanTwin",
+    "params": { "period": "Winter", "hotel": "RecursionRetreat", "room": "BooleanTwin" },
+    "expected_rate": "30000"
+  },
+  {
+    "url": "/api/v1/pricing?period=Spring&hotel=GitawayHotel&room=RestfulKing",
+    "params": { "period": "Spring", "hotel": "GitawayHotel", "room": "RestfulKing" },
+    "expected_rate": "20000"
+  }
+]
