@@ -13,5 +13,7 @@ module CircuitBreakable
 
   def trip_circuit!(key)
     Rails.cache.write(key, true, expires_in: CIRCUIT_BREAKER_TTL)
+  rescue Redis::CannotConnectError => e
+    log_error("Redis unreachable tripping circuit #{key}: #{e.message}. Unable to trip circuit breaker.")
   end
 end
